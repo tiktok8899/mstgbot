@@ -183,7 +183,7 @@ async def handle_group_message(update: Update, context: CallbackContext):
                     forwarded = await message.forward(admin_id)
                     await getattr(context.bot, f"send_{msg_type}")(
                         chat_id=admin_id,
-                        ​**​{msg_type: file_id},
+                        **{msg_type: file_id},
                         caption=f"来自: {bot_data.groups[group_id].title}",
                         reply_to_message_id=forwarded.message_id,
                         reply_markup=InlineKeyboardMarkup(buttons)
