@@ -78,42 +78,48 @@ async def handle_new_chat_members(update: Update, context: CallbackContext):
             await verify_and_add_group(chat, context)
 
 async def verify_and_add_group(chat: Chat, context: CallbackContext):
-    """验证权限并添加群组"""
+    """增强版群组验证函数"""
     try:
+        logger.info(f"开始处理群组: {chat.title}({chat.id})")
+        
         # 检查管理员权限
         bot_member = await chat.get_member(context.bot.id)
+        logger.info(f"机器人权限状态: {bot_member.status}")
+        
         if bot_member.status != "administrator":
-            await context.bot.send_message(
-                chat_id=chat.id,
-                text="⚠️ 需要管理员权限才能工作！"
-            )
+            msg = "⚠️ 需要管理员权限才能工作！"
+            await context.bot.send_message(chat_id=chat.id, text=msg)
+            logger.warning(f"权限不足: {msg}")
             return
 
-        # 添加到群组列表
-        if chat.id not in bot_data.groups:
-            bot_data.groups[chat.id] = GroupConfig(chat.id, chat.title)
-            logger.info(f"新群组注册成功: {chat.title}")
+        # 添加到群组列表（强制更新）
+        bot_data.groups[chat.id] = GroupConfig(chat.id, chat.title)
+        logger.info(f"群组注册成功: {chat.title} | 当前群组数: {len(bot_data.groups)}")
 
-            # 通知管理员
-            for admin_id in bot_data.admin_ids:
+        # 通知所有管理员
+        for admin_id in bot_data.admin_ids:
+            try:
                 await context.bot.send_message(
                     chat_id=admin_id,
-                    text=f"📌 新群组加入:\n名称: {chat.title}\nID: {chat.id}"
+                    text=f"✅ 新群组激活:\n名称: {chat.title}\nID: {chat.id}"
                 )
+            except Exception as e:
+                logger.error(f"通知管理员失败 {admin_id}: {str(e)}")
 
         # 发送欢迎消息
         await context.bot.send_message(
             chat_id=chat.id,
-            text="✅ 消息转发功能已激活\n"
-                 "群组消息将自动转发给管理员"
+            text="🤖 消息转发已启用\n• 所有消息将转发给管理员\n• 回复消息即可互动"
         )
+        
     except Exception as e:
-        logger.error(f"添加群组出错: {str(e)}")
+        logger.critical(f"群组初始化失败: {str(e)}", exc_info=True)
 
 async def handle_group_message(update: Update, context: CallbackContext):
     """处理群组消息转发"""
     message = update.message
     group_id = message.chat.id
+    logger.info(f"收到群组消息 | 群组: {message.chat.title}({group_id}) | 类型: {message.content_type}")
     
     # 检查是否已注册群组
     if group_id not in bot_data.groups:
