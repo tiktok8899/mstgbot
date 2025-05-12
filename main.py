@@ -150,9 +150,10 @@ async def handle_group_message(update: Update, context: CallbackContext):
                     )
                 elif msg_type in ['photo', 'document', 'video']:
                     media = getattr(message, msg_type)
-                    await getattr(context.bot, f"send_{msg_type}")(
+                    send_method = getattr(context.bot, f"send_{msg_type}")
+                    await send_method(
                         chat_id=admin_id,
-                        **​{msg_type: media[-1].file_id},  # 确保这行是全新手打输入
+                        ​**{msg_type: media[-1].file_id},
                         caption=f"来自: {bot_data.groups[group_id].title}",
                         reply_markup=InlineKeyboardMarkup(buttons)
                     )
