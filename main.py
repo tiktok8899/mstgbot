@@ -155,13 +155,15 @@ async def handle_group_message(update: Update, context: CallbackContext):
         logger.info(f"收到群组消息 | 群组: {message.chat.title} | 类型: {msg_type}")
 
         # 构建回复按钮
-        buttons = [[
-            InlineKeyboardButton("💬 回复群组", callback_data=f"group_reply_{group_id}"),
-            InlineKeyboardButton(
-                f"👤 回复@{message.from_user.username or message.from_user.first_name}",
-                callback_data=f"reply_{group_id}_{message.message_id}"
-            )
-        ]]
+        buttons = [
+            [
+                InlineKeyboardButton("💬 回复群组", callback_data=f"group_reply_{group_id}"),
+                InlineKeyboardButton(
+                    f"👤 回复@{message.from_user.username or message.from_user.first_name}",
+                    callback_data=f"user_reply_{group_id}_{message.message_id}"
+                )
+            ]
+        ]
 
         # 转发消息给管理员
         for admin_id in bot_data.admin_ids:
@@ -176,13 +178,13 @@ async def handle_group_message(update: Update, context: CallbackContext):
                     )
                 elif msg_type in ['photo', 'document', 'video']:
                     media = getattr(message, msg_type)
-                    send_method = getattr(context.bot, f"send_{msg_type}")
-                    await send_method(
-                        chat_id=admin_id,
-                        **{msg_type: media[-1].file_id},
-                        caption=f"来自: {bot_data.groups[group_id].title}",
-                        reply_markup=InlineKeyboardMarkup(buttons)
-                    )
+                    send_params = {
+                        msg_type: media[-1].file_id,
+                        'chat_id': admin_id,
+                        'caption': f"来自: {bot_data.groups[group_id].title}",
+                        'reply_markup': InlineKeyboardMarkup(buttons)
+                    }
+                    await getattr(context.bot, f"send_{msg_type}")(**send_params)
             except Exception as e:
                 logger.error(f"转发消息失败 {admin_id}: {str(e)}")
     except Exception as e:
@@ -212,35 +214,24 @@ async def process_admin_reply(message: Message, context: CallbackContext):
     """处理管理员回复"""
     try:
         user_id = message.from_user.id
-        if user_id not in bot_data.user_context:
+        context_data = bot_data.user_context.get(user_id)
+        
+        if not context_data:
+            await message.reply_text("⚠️ 会话已过期，请重新点击回复按钮")
             return
             
-        context_data = bot_data.user_context[user_id]
         group_id = context_data['group_id']
-        
         if group_id not in bot_data.groups:
             await message.reply_text("⚠️ 目标群组已失效")
             return
             
         try:
-            if context_data['reply_type'] == 'group':
-                # 群组回复模式
-                if message.text:
-                    await context.bot.send_message(
-                        chat_id=group_id,
-                        text=message.text
-                    )
-                elif message.photo:
-                    await context.bot.send_photo(
-                        chat_id=group_id,
-                        photo=message.photo[-1].file_id,
-                        caption=message.caption
-                    )
-                await message.reply_text(f"✅ 消息已发送到群组 {bot_data.groups[group_id].title}")
-                
-            elif context_data['reply_type'] == 'user':
-                # 用户回复模式（原有功能）
+            # 用户回复模式
+            if context_data['reply_type'] == 'user':
                 reply_to_id = context_data.get('message_id')
+                if not reply_to_id:
+                    raise ValueError("缺少message_id")
+                    
                 if message.text:
                     await context.bot.send_message(
                         chat_id=group_id,
@@ -256,13 +247,72 @@ async def process_admin_reply(message: Message, context: CallbackContext):
                     )
                 await message.reply_text(f"✅ 回复已发送给用户")
                 
+            # 群组回复模式
+            elif context_data['reply_type'] == 'group':
+                if message.text:
+                    await context.bot.send_message(
+                        chat_id=group_id,
+                        text=message.text
+                    )
+                elif message.photo:
+                    await context.bot.send_photo(
+                        chat_id=group_id,
+                        photo=message.photo[-1].file_id,
+                        caption=message.caption
+                    )
+                await message.reply_text(f"✅ 消息已发送到群组 {bot_data.groups[group_id].title}")
+                
         except Exception as e:
             await message.reply_text(f"❌ 发送失败: {str(e)}")
+            logger.error(f"回复处理失败: {str(e)}", exc_info=True)
         finally:
             bot_data.user_context.pop(user_id, None)
             
     except Exception as e:
-        logger.error(f"处理回复异常: {str(e)}")
+        logger.error(f"处理回复异常: {str(e)}", exc_info=True)
+
+async def handle_button_click(update: Update, context: CallbackContext):
+    """处理按钮回调"""
+    try:
+        query = update.callback_query
+        user = query.from_user
+        
+        if user.id not in bot_data.admin_ids:
+            await query.answer("❌ 需要管理员权限")
+            return
+            
+        data = query.data
+        logger.info(f"收到按钮回调: {data}")
+        
+        # 处理群组回复
+        if data.startswith('group_reply_'):
+            group_id = int(data.split('_')[2])
+            bot_data.user_context[user.id] = {
+                'group_id': group_id,
+                'reply_type': 'group'
+            }
+            await query.answer("请输入要发送到群组的消息...")
+            
+        # 处理用户回复
+        elif data.startswith('user_reply_'):
+            parts = data.split('_')
+            if len(parts) >= 4:
+                group_id = int(parts[2])
+                message_id = int(parts[3])
+                bot_data.user_context[user.id] = {
+                    'group_id': group_id,
+                    'message_id': message_id,
+                    'reply_type': 'user'
+                }
+                await query.answer("请输入回复内容...")
+            else:
+                logger.error(f"无效的回调数据格式: {data}")
+                await query.answer("⚠️ 操作失败，数据格式错误")
+        
+        await query.delete_message()
+    except Exception as e:
+        logger.error(f"按钮处理错误: {str(e)}", exc_info=True)
+        await query.answer("⚠️ 操作失败")
 
 # === 管理命令 ===
 async def list_groups(update: Update, context: CallbackContext):
@@ -311,42 +361,6 @@ async def add_admin(update: Update, context: CallbackContext):
             await update.message.reply_text("❌ 无效的用户ID")
     except Exception as e:
         logger.error(f"执行/addadmin命令异常: {str(e)}")
-
-# === 按钮处理 ===
-async def handle_button_click(update: Update, context: CallbackContext):
-    """处理按钮回调"""
-    try:
-        query = update.callback_query
-        user = query.from_user
-        
-        if user.id not in bot_data.admin_ids:
-            await query.answer("❌ 需要管理员权限")
-            return
-            
-        data = query.data
-        if data.startswith('group_reply_'):
-            # 处理群组回复
-            group_id = int(data.split('_')[2])
-            bot_data.user_context[user.id] = {
-                'group_id': group_id,
-                'reply_type': 'group'
-            }
-            await query.answer("请输入要发送到群组的消息...")
-            
-        elif data.startswith('user_reply_'):
-            # 处理用户回复（原有功能）
-            _, _, group_id, message_id = data.split('_')
-            bot_data.user_context[user.id] = {
-                'group_id': int(group_id),
-                'message_id': int(message_id),
-                'reply_type': 'user'
-            }
-            await query.answer("请输入回复内容...")
-        
-        await query.delete_message()
-    except Exception as e:
-        logger.error(f"按钮处理错误: {str(e)}")
-        await query.answer("⚠️ 操作失败")
 
 # === 主程序 ===
 def main():
