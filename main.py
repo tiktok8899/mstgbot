@@ -118,15 +118,12 @@ async def handle_group_message(update: Update, context: CallbackContext):
         message = update.message
         group_id = message.chat.id
         
-        # 检查群组注册状态
         if group_id not in bot_data.groups:
             logger.warning(f"未注册的群组消息: {group_id}")
             return
             
-        # 更新活动时间
         bot_data.groups[group_id].last_activity = datetime.now()
         
-        # 确定消息类型
         msg_type = next(
             (t for t in ['text', 'photo', 'document', 'video'] 
              if getattr(message, t, None)),
@@ -134,7 +131,6 @@ async def handle_group_message(update: Update, context: CallbackContext):
         )
         logger.info(f"收到群组消息 | 群组: {message.chat.title} | 类型: {msg_type}")
 
-        # 构建回复按钮
         buttons = [[
             InlineKeyboardButton(
                 f"👤 回复@{message.from_user.username or message.from_user.first_name}",
@@ -142,7 +138,6 @@ async def handle_group_message(update: Update, context: CallbackContext):
             )
         ]]
 
-        # 转发消息给管理员
         for admin_id in bot_data.admin_ids:
             try:
                 if msg_type == 'text':
