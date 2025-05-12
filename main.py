@@ -31,10 +31,9 @@ ChatID = int
 UserID = int
 
 class GroupConfig:
-    def __init__(self, chat_id: ChatID, title: str, is_active: bool = True):
+    def __init__(self, chat_id: ChatID, title: str):
         self.chat_id = chat_id
         self.title = title
-        self.is_active = is_active
         self.last_activity = datetime.now()
 
 class BotData:
@@ -43,7 +42,7 @@ class BotData:
         self.groups: Dict[ChatID, GroupConfig] = {}
         self.user_context: Dict[UserID, Dict] = {}
 
-# 初始化机器人数据
+# 全局数据
 bot_data = BotData()
 
 async def init_bot_data(context: CallbackContext):
@@ -51,190 +50,181 @@ async def init_bot_data(context: CallbackContext):
     admin_ids = os.getenv('ADMIN_IDS', '').split(',')
     if admin_ids:
         bot_data.admin_ids = [int(uid.strip()) for uid in admin_ids if uid.strip()]
+    logger.info(f"机器人初始化完成，管理员数量: {len(bot_data.admin_ids)}")
 
 async def start(update: Update, context: CallbackContext):
     """处理/start命令"""
     user = update.effective_user
     if user.id in bot_data.admin_ids:
         await update.message.reply_text(
-            "👋 管理员你好！我是群聊转发机器人\n\n"
-            "只需将我以管理员身份添加到群组，我就能自动转发消息\n\n"
-            "可用命令:\n"
+            "🤖 群聊转发机器人已就绪\n\n"
+            "使用说明:\n"
+            "1. 将机器人以管理员身份添加到群组\n"
+            "2. 群组消息会自动转发到此聊天\n"
+            "3. 回复消息即可与群组互动\n\n"
+            "管理命令:\n"
             "/groups - 查看所有群组\n"
-            "/toggle [群组ID] - 启用/禁用群组\n"
-            "/addadmin [用户ID] - 添加管理员\n"
-            "/help - 查看帮助"
+            "/addadmin [用户ID] - 添加管理员"
         )
     else:
-        await update.message.reply_text("❌ 你没有权限使用此机器人")
+        await update.message.reply_text("❌ 需要管理员权限")
 
 async def handle_new_chat_members(update: Update, context: CallbackContext):
     """处理机器人被加入群组"""
     chat = update.effective_chat
     for user in update.message.new_chat_members:
         if user.id == context.bot.id:
-            await process_bot_added_to_group(chat, context)
+            logger.info(f"机器人被添加到群组: {chat.title}({chat.id})")
+            await verify_and_add_group(chat, context)
 
-async def process_bot_added_to_group(chat: Chat, context: CallbackContext):
-    """处理机器人被添加到群组"""
-    group_id = chat.id
-    
-    # 检查机器人是否群组管理员
+async def verify_and_add_group(chat: Chat, context: CallbackContext):
+    """验证权限并添加群组"""
     try:
+        # 检查管理员权限
         bot_member = await chat.get_member(context.bot.id)
-        if not bot_member.status == "administrator":
+        if bot_member.status != "administrator":
             await context.bot.send_message(
-                chat_id=group_id,
-                text="⚠️ 我需要管理员权限才能工作，请将我设为管理员！"
+                chat_id=chat.id,
+                text="⚠️ 需要管理员权限才能工作！"
             )
             return
-    except Exception as e:
-        logger.error(f"检查管理员权限失败: {e}")
-        return
 
-    # 添加群组到管理列表
-    if group_id not in bot_data.groups:
-        bot_data.groups[group_id] = GroupConfig(group_id, chat.title)
-        logger.info(f"新群组添加: {chat.title} (ID: {group_id})")
-        
-        # 通知所有管理员
-        for admin_id in bot_data.admin_ids:
-            try:
+        # 添加到群组列表
+        if chat.id not in bot_data.groups:
+            bot_data.groups[chat.id] = GroupConfig(chat.id, chat.title)
+            logger.info(f"新群组注册成功: {chat.title}")
+
+            # 通知管理员
+            for admin_id in bot_data.admin_ids:
                 await context.bot.send_message(
                     chat_id=admin_id,
-                    text=f"🤖 已加入新群组: {chat.title} (ID: {group_id})"
+                    text=f"📌 新群组加入:\n名称: {chat.title}\nID: {chat.id}"
                 )
-            except Exception as e:
-                logger.error(f"通知管理员失败: {e}")
+
+        # 发送欢迎消息
+        await context.bot.send_message(
+            chat_id=chat.id,
+            text="✅ 消息转发功能已激活\n"
+                 "群组消息将自动转发给管理员"
+        )
+    except Exception as e:
+        logger.error(f"添加群组出错: {str(e)}")
 
 async def handle_group_message(update: Update, context: CallbackContext):
-    """处理群组消息"""
+    """处理群组消息转发"""
     message = update.message
     group_id = message.chat.id
     
-    # 检查群组是否被管理
+    # 检查是否已注册群组
     if group_id not in bot_data.groups:
         return
     
-    group_config = bot_data.groups[group_id]
-    
-    # 检查群组是否活跃
-    if not group_config.is_active:
-        return
-    
-    # 更新最后活动时间
-    group_config.last_activity = datetime.now()
+    group = bot_data.groups[group_id]
+    group.last_activity = datetime.now()
     
     # 创建回复按钮
-    keyboard = [
-        [
-            InlineKeyboardButton("📨 回复群组", callback_data=f"reply_{group_id}"),
-            InlineKeyboardButton("🔄 切换状态", callback_data=f"toggle_{group_id}")
-        ]
-    ]
-    
-    if message.from_user:
-        keyboard.append([
-            InlineKeyboardButton(
-                f"👤 回复@{message.from_user.username or message.from_user.first_name}",
-                callback_data=f"reply_user_{group_id}_{message.message_id}"
-            )
-        ])
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    # 转发消息给管理员
-    try:
-        forwarded = await message.forward(bot_data.admin_ids[0])
-        await context.bot.send_message(
-            chat_id=bot_data.admin_ids[0],
-            text=f"来自群组: {group_config.title}",
-            reply_to_message_id=forwarded.message_id,
-            reply_markup=reply_markup
+    buttons = [[
+        InlineKeyboardButton(
+            f"👤 回复@{message.from_user.username or message.from_user.first_name}",
+            callback_data=f"reply_{group_id}_{message.message_id}"
         )
-    except Exception as e:
-        logger.error(f"转发消息失败: {e}")
+    ]]
+    
+    # 转发消息给所有管理员
+    for admin_id in bot_data.admin_ids:
+        try:
+            if message.text:
+                forwarded = await message.forward(admin_id)
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=f"来自: {group.title}",
+                    reply_to_message_id=forwarded.message_id,
+                    reply_markup=InlineKeyboardMarkup(buttons)
+                )
+            elif message.photo:
+                await context.bot.send_photo(
+                    chat_id=admin_id,
+                    photo=message.photo[-1].file_id,
+                    caption=f"来自: {group.title}",
+                    reply_markup=InlineKeyboardMarkup(buttons)
+                )
+        except Exception as e:
+            logger.error(f"转发消息失败: {str(e)}")
 
 async def handle_private_message(update: Update, context: CallbackContext):
-    """处理私聊消息"""
+    """处理管理员私聊消息"""
     message = update.message
     user = update.effective_user
     
     if user.id not in bot_data.admin_ids:
-        await message.reply_text("❌ 你没有权限使用此机器人")
+        await message.reply_text("❌ 需要管理员权限")
         return
     
     # 处理回复消息
     if message.reply_to_message and user.id in bot_data.user_context:
-        await handle_admin_reply(message, context)
+        await process_admin_reply(message, context)
         return
     
-    await message.reply_text("请回复你要回复的群组消息")
+    await message.reply_text("ℹ️ 请回复转发的消息进行互动")
 
-async def handle_admin_reply(message: Message, context: CallbackContext):
+async def process_admin_reply(message: Message, context: CallbackContext):
     """处理管理员回复"""
     user_id = message.from_user.id
     context_data = bot_data.user_context[user_id]
     group_id = context_data['group_id']
-    reply_to_id = context_data.get('replying_to')
+    reply_to_id = context_data.get('message_id')
     
     try:
-        await context.bot.send_message(
-            chat_id=group_id,
-            text=message.text,
-            reply_to_message_id=reply_to_id
-        )
-        await message.reply_text("✅ 消息已发送到群组")
-        del bot_data.user_context[user_id]
+        # 发送消息到群组
+        if message.text:
+            await context.bot.send_message(
+                chat_id=group_id,
+                text=message.text,
+                reply_to_message_id=reply_to_id
+            )
+        elif message.photo:
+            await context.bot.send_photo(
+                chat_id=group_id,
+                photo=message.photo[-1].file_id,
+                caption=message.caption,
+                reply_to_message_id=reply_to_id
+            )
+            
+        await message.reply_text(f"✅ 已发送到群组: {bot_data.groups[group_id].title}")
     except Exception as e:
         await message.reply_text(f"❌ 发送失败: {str(e)}")
+    finally:
+        bot_data.user_context.pop(user_id, None)
 
 async def list_groups(update: Update, context: CallbackContext):
-    """列出所有群组"""
+    """查看群组列表"""
     if update.effective_user.id not in bot_data.admin_ids:
-        await update.message.reply_text("❌ 你没有权限执行此操作")
+        await update.message.reply_text("❌ 需要管理员权限")
         return
     
     if not bot_data.groups:
-        await update.message.reply_text("机器人尚未加入任何群组")
+        await update.message.reply_text("尚未加入任何群组")
         return
     
-    text = "📋 管理的群组列表:\n\n"
-    for group_id, group in bot_data.groups.items():
-        status = "✅ 活跃" if group.is_active else "❌ 禁用"
-        text += f"🏷️ {group.title}\n🆔 {group_id}\n📊 {status}\n━━━━━━━━━━━━━━\n"
+    text = "📋 当前管理的群组:\n\n"
+    for group in bot_data.groups.values():
+        text += (
+            f"🏷️ {group.title}\n"
+            f"ID: <code>{group.chat_id}</code>\n"
+            f"最后活动: {group.last_activity.strftime('%m-%d %H:%M')}\n"
+            "━━━━━━━━━━━━━━\n"
+        )
     
-    await update.message.reply_text(text)
-
-async def toggle_group(update: Update, context: CallbackContext):
-    """切换群组状态"""
-    if update.effective_user.id not in bot_data.admin_ids:
-        await update.message.reply_text("❌ 你没有权限执行此操作")
-        return
-    
-    if not context.args:
-        await update.message.reply_text("请提供群组ID，例如: /toggle 123456789")
-        return
-    
-    try:
-        group_id = int(context.args[0])
-        if group_id in bot_data.groups:
-            bot_data.groups[group_id].is_active = not bot_data.groups[group_id].is_active
-            status = "已激活" if bot_data.groups[group_id].is_active else "已禁用"
-            await update.message.reply_text(f"🔄 {status}群组: {bot_data.groups[group_id].title}")
-        else:
-            await update.message.reply_text("找不到指定的群组")
-    except ValueError:
-        await update.message.reply_text("无效的群组ID")
+    await update.message.reply_text(text, parse_mode="HTML")
 
 async def add_admin(update: Update, context: CallbackContext):
     """添加管理员"""
     if update.effective_user.id not in bot_data.admin_ids:
-        await update.message.reply_text("❌ 你没有权限执行此操作")
+        await update.message.reply_text("❌ 需要管理员权限")
         return
     
     if not context.args:
-        await update.message.reply_text("请提供用户ID，例如: /addadmin 987654321")
+        await update.message.reply_text("用法: /addadmin <用户ID>")
         return
     
     try:
@@ -243,12 +233,12 @@ async def add_admin(update: Update, context: CallbackContext):
             bot_data.admin_ids.append(new_admin_id)
             await update.message.reply_text(f"✅ 已添加用户 {new_admin_id} 为管理员")
         else:
-            await update.message.reply_text("该用户已经是管理员")
+            await update.message.reply_text("ℹ️ 该用户已是管理员")
     except ValueError:
-        await update.message.reply_text("无效的用户ID")
+        await update.message.reply_text("❌ 无效的用户ID")
 
-async def button_callback(update: Update, context: CallbackContext):
-    """处理按钮回调"""
+async def handle_button_click(update: Update, context: CallbackContext):
+    """处理回复按钮点击"""
     query = update.callback_query
     user = query.from_user
     
@@ -256,29 +246,19 @@ async def button_callback(update: Update, context: CallbackContext):
         await query.answer("❌ 需要管理员权限")
         return
     
-    data = query.data
-    
-    if data.startswith('reply_user_'):
-        _, _, group_id, message_id = data.split('_')
-        bot_data.user_context[user.id] = {
-            'group_id': int(group_id),
-            'replying_to': int(message_id)
-        }
-        await query.answer("请输入你的回复...")
-    
-    elif data.startswith('reply_'):
-        group_id = int(data.split('_')[1])
-        bot_data.user_context[user.id] = {'group_id': group_id}
-        await query.answer("请输入要发送的消息...")
-    
-    elif data.startswith('toggle_'):
-        group_id = int(data.split('_')[1])
-        if group_id in bot_data.groups:
-            bot_data.groups[group_id].is_active = not bot_data.groups[group_id].is_active
-            status = "已激活" if bot_data.groups[group_id].is_active else "已禁用"
-            await query.answer(f"{status}群组: {bot_data.groups[group_id].title}")
-    
-    await query.delete_message()
+    try:
+        if query.data.startswith('reply_'):
+            _, group_id, message_id = query.data.split('_')
+            bot_data.user_context[user.id] = {
+                'group_id': int(group_id),
+                'message_id': int(message_id)
+            }
+            await query.answer("请输入回复内容...")
+        
+        await query.delete_message()
+    except Exception as e:
+        logger.error(f"按钮处理出错: {str(e)}")
+        await query.answer("⚠️ 操作失败")
 
 def main():
     """启动机器人"""
@@ -293,17 +273,17 @@ def main():
     handlers = [
         CommandHandler('start', start),
         CommandHandler('groups', list_groups),
-        CommandHandler('toggle', toggle_group),
         CommandHandler('addadmin', add_admin),
         MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, handle_new_chat_members),
         MessageHandler(filters.ChatType.GROUPS, handle_group_message),
         MessageHandler(filters.ChatType.PRIVATE, handle_private_message),
-        CallbackQueryHandler(button_callback)
+        CallbackQueryHandler(handle_button_click)
     ]
     
     for handler in handlers:
         application.add_handler(handler)
     
+    logger.info("机器人启动中...")
     application.run_polling()
 
 if __name__ == '__main__':
