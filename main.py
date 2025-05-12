@@ -178,7 +178,7 @@ async def handle_group_message(update: Update, context: CallbackContext):
                     send_method = getattr(context.bot, f"send_{msg_type}")
                     await send_method(
                         chat_id=admin_id,
-                        **​{msg_type: media[-1].file_id},
+                        **{msg_type: media[-1].file_id},
                         caption=f"来自: {bot_data.groups[group_id].title}",
                         reply_markup=InlineKeyboardMarkup(buttons)
                     )
