@@ -152,7 +152,7 @@ async def handle_group_message(update: Update, context: CallbackContext):
                     media = getattr(message, msg_type)
                     await getattr(context.bot, f"send_{msg_type}")(
                         chat_id=admin_id,
-                        ​**​{msg_type: media[-1].file_id},
+                        **​{msg_type: media[-1].file_id},  # 确保这行是全新手打输入
                         caption=f"来自: {bot_data.groups[group_id].title}",
                         reply_markup=InlineKeyboardMarkup(buttons)
                     )
