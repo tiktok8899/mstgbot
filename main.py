@@ -148,7 +148,7 @@ async def handle_group_message(update: Update, context: CallbackContext):
         
         # 确定消息类型
         msg_type = next(
-            (t for t in ['text', 'photo', 'document', 'video'] 
+            (t for t in ['text', 'photo', 'document', 'video', 'audio', 'voice'] 
              if getattr(message, t, None)),
             'unknown'
         )
@@ -165,7 +165,7 @@ async def handle_group_message(update: Update, context: CallbackContext):
             ]
         ]
 
-        # 转发消息给管理员
+        # 转发消息给管理员（保留原始消息类型）
         for admin_id in bot_data.admin_ids:
             try:
                 if msg_type == 'text':
@@ -176,15 +176,18 @@ async def handle_group_message(update: Update, context: CallbackContext):
                         reply_to_message_id=forwarded.message_id,
                         reply_markup=InlineKeyboardMarkup(buttons)
                     )
-                elif msg_type in ['photo', 'document', 'video']:
+                elif msg_type in ['photo', 'document', 'video', 'audio', 'voice']:
                     media = getattr(message, msg_type)
-                    send_params = {
-                        msg_type: media[-1].file_id,
-                        'chat_id': admin_id,
-                        'caption': f"来自: {bot_data.groups[group_id].title}",
-                        'reply_markup': InlineKeyboardMarkup(buttons)
-                    }
-                    await getattr(context.bot, f"send_{msg_type}")(**send_params)
+                    file_id = media[-1].file_id if msg_type != 'document' else media.file_id
+                    
+                    forwarded = await message.forward(admin_id)
+                    await getattr(context.bot, f"send_{msg_type}")(
+                        chat_id=admin_id,
+                        ​**​{msg_type: file_id},
+                        caption=f"来自: {bot_data.groups[group_id].title}",
+                        reply_to_message_id=forwarded.message_id,
+                        reply_markup=InlineKeyboardMarkup(buttons)
+                    )
             except Exception as e:
                 logger.error(f"转发消息失败 {admin_id}: {str(e)}")
     except Exception as e:
@@ -211,7 +214,7 @@ async def handle_private_message(update: Update, context: CallbackContext):
         logger.error(f"处理私聊消息异常: {str(e)}")
 
 async def process_admin_reply(message: Message, context: CallbackContext):
-    """处理管理员回复"""
+    """处理管理员回复（支持所有媒体类型）"""
     try:
         user_id = message.from_user.id
         context_data = bot_data.user_context.get(user_id)
@@ -224,44 +227,49 @@ async def process_admin_reply(message: Message, context: CallbackContext):
         if group_id not in bot_data.groups:
             await message.reply_text("⚠️ 目标群组已失效")
             return
-            
+
+        # 获取原始转发消息
+        original_msg = context.bot_data.get('original_message')
+        
         try:
-            # 用户回复模式
-            if context_data['reply_type'] == 'user':
-                reply_to_id = context_data.get('message_id')
-                if not reply_to_id:
-                    raise ValueError("缺少message_id")
-                    
-                if message.text:
-                    await context.bot.send_message(
-                        chat_id=group_id,
-                        text=message.text,
-                        reply_to_message_id=reply_to_id
-                    )
-                elif message.photo:
-                    await context.bot.send_photo(
-                        chat_id=group_id,
-                        photo=message.photo[-1].file_id,
-                        caption=message.caption,
-                        reply_to_message_id=reply_to_id
-                    )
-                await message.reply_text(f"✅ 回复已发送给用户")
+            # 文本消息回复
+            if message.text:
+                await context.bot.send_message(
+                    chat_id=group_id,
+                    text=message.text,
+                    reply_to_message_id=context_data.get('message_id')
+                )
+            
+            # 媒体消息回复（图片/文档/视频等）
+            elif message.photo:
+                await context.bot.send_photo(
+                    chat_id=group_id,
+                    photo=message.photo[-1].file_id,
+                    caption=message.caption,
+                    reply_to_message_id=context_data.get('message_id')
+                )
+            elif message.document:
+                await context.bot.send_document(
+                    chat_id=group_id,
+                    document=message.document.file_id,
+                    reply_to_message_id=context_data.get('message_id')
+                )
+            elif message.video:
+                await context.bot.send_video(
+                    chat_id=group_id,
+                    video=message.video.file_id,
+                    caption=message.caption,
+                    reply_to_message_id=context_data.get('message_id')
+                )
+            elif message.audio:
+                await context.bot.send_audio(
+                    chat_id=group_id,
+                    audio=message.audio.file_id,
+                    reply_to_message_id=context_data.get('message_id')
+                )
                 
-            # 群组回复模式
-            elif context_data['reply_type'] == 'group':
-                if message.text:
-                    await context.bot.send_message(
-                        chat_id=group_id,
-                        text=message.text
-                    )
-                elif message.photo:
-                    await context.bot.send_photo(
-                        chat_id=group_id,
-                        photo=message.photo[-1].file_id,
-                        caption=message.caption
-                    )
-                await message.reply_text(f"✅ 消息已发送到群组 {bot_data.groups[group_id].title}")
-                
+            await message.reply_text(f"✅ 回复已发送到群组")
+            
         except Exception as e:
             await message.reply_text(f"❌ 发送失败: {str(e)}")
             logger.error(f"回复处理失败: {str(e)}", exc_info=True)
@@ -272,7 +280,7 @@ async def process_admin_reply(message: Message, context: CallbackContext):
         logger.error(f"处理回复异常: {str(e)}", exc_info=True)
 
 async def handle_button_click(update: Update, context: CallbackContext):
-    """处理按钮回调"""
+    """处理按钮回调（增强媒体支持）"""
     try:
         query = update.callback_query
         user = query.from_user
@@ -283,6 +291,9 @@ async def handle_button_click(update: Update, context: CallbackContext):
             
         data = query.data
         logger.info(f"收到按钮回调: {data}")
+        
+        # 保存原始消息引用
+        context.bot_data['original_message'] = query.message.reply_to_message
         
         # 处理群组回复
         if data.startswith('group_reply_'):
@@ -299,10 +310,24 @@ async def handle_button_click(update: Update, context: CallbackContext):
             if len(parts) >= 4:
                 group_id = int(parts[2])
                 message_id = int(parts[3])
+                
+                # 检测原始消息类型
+                original_msg = query.message.reply_to_message
+                content_type = next(
+                    (t for t in ['photo', 'document', 'video', 'audio', 'voice'] 
+                     if getattr(original_msg, t, None)),
+                    None
+                )
+                
+                # 保存上下文
                 bot_data.user_context[user.id] = {
                     'group_id': group_id,
                     'message_id': message_id,
-                    'reply_type': 'user'
+                    'reply_type': 'user',
+                    'content_type': content_type,
+                    'file_id': (getattr(original_msg, content_type)[-1].file_id 
+                               if content_type and content_type != 'document' 
+                               else getattr(original_msg, content_type).file_id if content_type else None)
                 }
                 await query.answer("请输入回复内容...")
             else:
