@@ -45,7 +45,7 @@ class BotData:
 # === 全局数据 ===
 bot_data = BotData()
 
-# === 核心函数 ===
+# === 核心功能 ===
 async def init_bot_data(context: CallbackContext):
     """初始化机器人数据"""
     try:
@@ -55,6 +55,26 @@ async def init_bot_data(context: CallbackContext):
     except Exception as e:
         logger.error(f"初始化失败: {str(e)}")
         raise
+
+async def start(update: Update, context: CallbackContext):
+    """处理/start命令"""
+    try:
+        user = update.effective_user
+        if user.id in bot_data.admin_ids:
+            await update.message.reply_text(
+                "🤖 群聊转发机器人已就绪\n\n"
+                "使用说明:\n"
+                "1. 将机器人以管理员身份添加到群组\n"
+                "2. 群组消息会自动转发到此聊天\n"
+                "3. 回复消息即可与群组互动\n\n"
+                "管理命令:\n"
+                "/groups - 查看所有群组\n"
+                "/addadmin [用户ID] - 添加管理员"
+            )
+        else:
+            await update.message.reply_text("❌ 需要管理员权限")
+    except Exception as e:
+        logger.error(f"处理/start命令出错: {str(e)}")
 
 async def verify_bot_permissions(chat: Chat, context: CallbackContext) -> bool:
     """检查机器人权限"""
@@ -118,12 +138,15 @@ async def handle_group_message(update: Update, context: CallbackContext):
         message = update.message
         group_id = message.chat.id
         
+        # 检查群组注册状态
         if group_id not in bot_data.groups:
             logger.warning(f"未注册的群组消息: {group_id}")
             return
             
+        # 更新活动时间
         bot_data.groups[group_id].last_activity = datetime.now()
         
+        # 确定消息类型
         msg_type = next(
             (t for t in ['text', 'photo', 'document', 'video'] 
              if getattr(message, t, None)),
@@ -131,6 +154,7 @@ async def handle_group_message(update: Update, context: CallbackContext):
         )
         logger.info(f"收到群组消息 | 群组: {message.chat.title} | 类型: {msg_type}")
 
+        # 构建回复按钮
         buttons = [[
             InlineKeyboardButton(
                 f"👤 回复@{message.from_user.username or message.from_user.first_name}",
@@ -138,6 +162,7 @@ async def handle_group_message(update: Update, context: CallbackContext):
             )
         ]]
 
+        # 转发消息给管理员
         for admin_id in bot_data.admin_ids:
             try:
                 if msg_type == 'text':
@@ -153,7 +178,7 @@ async def handle_group_message(update: Update, context: CallbackContext):
                     send_method = getattr(context.bot, f"send_{msg_type}")
                     await send_method(
                         chat_id=admin_id,
-                        **{msg_type: media[-1].file_id},
+                        ​**​{msg_type: media[-1].file_id},
                         caption=f"来自: {bot_data.groups[group_id].title}",
                         reply_markup=InlineKeyboardMarkup(buttons)
                     )
